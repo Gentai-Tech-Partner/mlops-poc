@@ -46,126 +46,97 @@ Key capabilities:
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                               CLIENT LAYER                                   │
-│                                                                               │
-│          REST Clients / Payment Systems / CRM Platforms                       │
-└───────────────────────────────────┬─────────────────────────────────────────┘
-                                    │  HTTP/JSON
-                                    ▼
-┌───────────────────────────────────────────────────────────────────────────┐
-│                        INFERENCE SERVICE  :8000                            │
-│                                                                             │
-│   POST /predict/fraud          POST /predict/churn                         │
-│   POST /predict/fraud/batch    GET  /health                                │
-│                                                                             │
-│   ┌─────────────────────┐    ┌──────────────────────┐                     │
-│   │  UC-01 Fraud Model  │    │  UC-02 Churn Model   │                     │
-│   │  GradientBoosting   │    │  GradientBoosting    │                     │
-│   │  (champion alias)   │    │  (champion alias)    │                     │
-│   └──────────┬──────────┘    └──────────┬───────────┘                     │
-│              │  in-memory cache          │  in-memory cache                │
-└──────────────┼───────────────────────────┼─────────────────────────────────┘
-               │ async fire-and-forget      │
-               │ feature payload            │
-               ▼                            ▼
-┌──────────────────────────────────────────────────────────────────────────┐
-│                      DRIFT MONITOR SERVICE  :8001                         │
-│                                                                            │
-│   POST /ingest/{use_case}     GET /drift/{use_case}                       │
-│                                                                            │
-│   ┌──────────────────────────────────────────────────────────────┐        │
-│   │  Sliding Window (deque, configurable size)                    │        │
-│   │                                                               │        │
-│   │  Every 60s ──► PSI + KS Test per feature                     │        │
-│   │                                                               │        │
-│   │  drift_features > 30% ──► POST /retrain webhook              │        │
-│   └──────────────────────────────────────────────────────────────┘        │
-└───────────────┬──────────────────────────────────────────────────────────┘
-                │ retraining webhook
-                ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│                         TRAINING SERVICE                                  │
-│                                                                           │
-│   train.py fraud_detection    train.py churn_prediction                  │
-│                                                                           │
-│   GradientBoostingClassifier + StandardScaler Pipeline                   │
-│   ► Log params, metrics, artifacts to MLflow                             │
-│   ► Register model in MLflow Model Registry                              │
-└───────────────────────────┬─────────────────────────────────────────────┘
-                            │ experiments + model registry
-                            ▼
-┌──────────────────────────────────────────────────────────────────────────┐
-│                            MLFLOW  :5000                                   │
-│                                                                            │
-│   Experiment Tracking ──► PostgreSQL backend store                        │
-│   Model Registry      ──► /mlflow/artifacts volume                        │
-│   Aliases: champion / challenger                                           │
-└───────────────────────────┬──────────────────────────────────────────────┘
-                            │
-                            ▼
-                  ┌────────────────────┐
-                  │   PostgreSQL :5432  │
-                  │   mlflow database  │
-                  └────────────────────┘
+### System Overview
 
-┌────────────────────────────────────────────────────────────────────────────┐
-│                          OBSERVABILITY LAYER                                │
-│                                                                              │
-│   ┌──────────────────────┐          ┌──────────────────────────────┐       │
-│   │   PROMETHEUS  :9090  │◄─scrape──│  /metrics (all services)     │       │
-│   │   30-day retention   │          │  - predictions_total         │       │
-│   └──────────┬───────────┘          │  - prediction_latency_sec    │       │
-│              │                      │  - drift_score               │       │
-│              ▼                      │  - model_version_info        │       │
-│   ┌──────────────────────┐          │  - retraining_triggers_total │       │
-│   │    GRAFANA  :3000    │          └──────────────────────────────┘       │
-│   │    MLOps Dashboard   │                                                  │
-│   └──────────────────────┘                                                  │
-└────────────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    Client(["🖥️ REST Clients\nPayment Systems · CRM Platforms"])
 
-┌────────────────────────────────────────────────────────────────────────────┐
-│                           CI/CD  (GitHub Actions)                           │
-│                                                                              │
-│  push/PR ──► Lint (ruff) ──► Unit Tests ──► Train & Validate               │
-│          ──► Build Images ──► Push GHCR ──► Deploy Staging ──► Smoke Tests │
-└────────────────────────────────────────────────────────────────────────────┘
+    subgraph APP["⚙️  Application Services"]
+        direction TB
+        subgraph INF["Inference Service  :8000"]
+            direction LR
+            FraudModel["🔴 UC-01 Fraud Detection\nGBM · champion alias"]
+            ChurnModel["🟡 UC-02 Churn Prediction\nGBM · champion alias"]
+        end
+        Drift["🔍 Drift Monitor  :8001\nSliding Window · PSI · KS Test\nAnalysis every 60 s"]
+        Train["🏋️ Training Service\nGBM + StandardScaler Pipeline\nMLflow experiment logging"]
+    end
+
+    subgraph MLPLATFORM["📊  ML Platform"]
+        MLflow["📈 MLflow  :5000\nExperiment Tracking\nModel Registry\nchampion / challenger"]
+        Postgres[("🗄️ PostgreSQL  :5432\nMLflow backend store")]
+    end
+
+    subgraph OBS["📉  Observability"]
+        Prometheus["⚡ Prometheus  :9090\n30-day retention"]
+        Grafana["📋 Grafana  :3000\nMLOps Dashboard"]
+    end
+
+    Client -->|"HTTP/JSON"| INF
+    INF -->|"async fire-and-forget\nfeature payload"| Drift
+    Drift -->|"retraining webhook\ndrift > 30% of features"| Train
+    Train -->|"log runs · register models"| MLflow
+    INF -->|"load champion model at startup"| MLflow
+    MLflow --- Postgres
+    INF -->|"/metrics scrape"| Prometheus
+    Drift -->|"/metrics scrape"| Prometheus
+    Prometheus --> Grafana
+
+    style Client fill:#4A90D9,color:#fff,stroke:#2C6FAC
+    style MLPLATFORM fill:#F0F4FF,stroke:#C0CAFF
+    style OBS fill:#F0FFF4,stroke:#A0DDAA
+    style APP fill:#FFF8F0,stroke:#FFCFA0
 ```
 
 ### Data Flow — Real-time Inference
 
-```
-Client
-  │
-  │  POST /predict/fraud  { transaction_id, amount, ... }
-  ▼
-Inference Service
-  │
-  ├── 1. Validate request (Pydantic schema)
-  ├── 2. Load features into model input array
-  ├── 3. model.predict_proba(features)          ← in-memory GBM pipeline
-  ├── 4. Increment Prometheus counters
-  ├── 5. Return FraudPrediction response         → Client
-  │
-  └── 6. BackgroundTask: POST /ingest/fraud_detection  → Drift Monitor
-                         (non-blocking, failure silently ignored)
+```mermaid
+sequenceDiagram
+    participant C  as 🖥️ Client
+    participant I  as 📡 Inference Service
+    participant M  as 🧠 Model Cache
+    participant P  as ⚡ Prometheus
+    participant D  as 🔍 Drift Monitor
+
+    C->>+I: POST /predict/fraud { transaction_id, amount, … }
+    I->>I: Validate schema (Pydantic)
+    I->>+M: predict_proba(features)
+    M-->>-I: [legit_prob, fraud_prob]
+    I->>P: increment predictions_total
+    I->>P: observe prediction_latency_seconds
+    I-->>-C: { fraud_score, is_fraud, latency_ms }
+    I-)D: POST /ingest/fraud_detection  (async · non-blocking)
 ```
 
 ### Drift Detection Flow
 
-```
-Drift Monitor (every 60 seconds)
-  │
-  ├── For each use_case in [fraud_detection, churn_prediction]:
-  │     For each feature in sliding_window:
-  │       ├── KS Test (reference_sample vs production_window)
-  │       ├── PSI computation (10 bins)
-  │       └── is_drifted = PSI > threshold OR p_value < 0.05
-  │
-  └── If drifted_features / total_features > 0.3:
-        POST http://training:8002/retrain
-             { use_case, reason, triggered_at }
+```mermaid
+flowchart TD
+    Tick(["⏱️ Every 60 seconds"])
+
+    Tick --> UC["Iterate use cases\nfraud_detection · churn_prediction"]
+
+    subgraph ANALYSIS["Statistical Analysis per Feature"]
+        direction LR
+        KS["KS Test\nreference vs production window"]
+        PSI["PSI\n10-bin histogram"]
+    end
+
+    UC --> ANALYSIS
+    ANALYSIS --> Gate{"p_value < 0.05\nor PSI > threshold?"}
+    Gate -->|"Yes"| Drifted["⚠️ Mark feature as drifted\nUpdate drift_score gauge"]
+    Gate -->|"No"| OK["✅ Feature stable"]
+
+    Drifted --> Ratio{"Drifted features\n> 30% of total?"}
+    OK --> Ratio
+    Ratio -->|"Yes"| Webhook["🚨 POST /retrain\n{ use_case, reason, triggered_at }"]
+    Ratio -->|"No"| End(["🔄 Wait for next tick"])
+    Webhook --> End
+
+    style Drifted fill:#FDECEA,stroke:#E57373
+    style Webhook fill:#FFF3E0,stroke:#FFB74D
+    style OK fill:#E8F5E9,stroke:#66BB6A
 ```
 
 ---
@@ -379,36 +350,34 @@ Full interactive documentation is available at `http://localhost:8000/docs` (Swa
 
 The GitHub Actions workflow (`.github/workflows/ci-cd.yml`) implements a multi-stage pipeline that blocks deployment when quality gates fail.
 
-```
-push to main / pull request
-          │
-          ▼
-  ┌───────────────────┐
-  │  Lint & Unit Tests │  ← ruff check + pytest
-  └────────┬──────────┘
-           │ pass
-           ▼
-  ┌────────────────────────────┐
-  │  Train & Validate Models   │  ← trains both models in ephemeral MLflow
-  │  (only on main branch)     │    validates F1 / AUC thresholds
-  └────────┬───────────────────┘
-           │ metrics pass
-           ▼
-  ┌───────────────────────────┐
-  │  Build & Push Docker      │  ← matrix: [inference, drift-monitor]
-  │  Images to GHCR           │    tagged by git SHA + latest
-  └────────┬──────────────────┘
-           │
-           ▼
-  ┌──────────────────────────┐
-  │  Deploy to Staging       │  ← SSH deploy via docker compose pull + up
-  │  (staging environment)   │
-  └────────┬─────────────────┘
-           │
-           ▼
-  ┌──────────────────────────┐
-  │  Smoke Tests             │  ← health + fraud + churn + batch endpoints
-  └──────────────────────────┘
+```mermaid
+flowchart LR
+    Push(["🔀 push / PR\nto main"])
+
+    subgraph CI["Continuous Integration"]
+        Lint["🔍 Lint & Unit Tests\nruff check · pytest"]
+        TrainVal["🏋️ Train & Validate\nfraud + churn models\nQuality gate: F1 · AUC"]
+        Build["🐳 Build & Push\nDocker images → GHCR\nmatrix: inference · drift-monitor"]
+    end
+
+    subgraph CD["Continuous Deployment"]
+        Deploy["🚀 Deploy to Staging\nSSH · docker compose pull + up"]
+        Smoke["🧪 Smoke Tests\nhealth · fraud · churn · batch"]
+    end
+
+    Done(["✅ Done"])
+
+    Push --> Lint
+    Lint -->|"pass"| TrainVal
+    TrainVal -->|"metrics pass"| Build
+    Build -->|"SHA-tagged image"| Deploy
+    Deploy --> Smoke
+    Smoke -->|"all pass"| Done
+
+    style CI fill:#EFF6FF,stroke:#93C5FD
+    style CD fill:#F0FDF4,stroke:#86EFAC
+    style Done fill:#DCFCE7,stroke:#4ADE80,color:#166534
+    style Push fill:#4A90D9,color:#fff,stroke:#2C6FAC
 ```
 
 ### Required GitHub Secrets
