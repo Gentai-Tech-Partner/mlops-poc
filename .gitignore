@@ -1,0 +1,44 @@
+# Claude Code IDE settings (local only)
+.claude/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+.venv/
+venv/
+env/
+.env
+.env.*
+
+# pytest / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+*.xml
+
+# mypy / ruff
+.mypy_cache/
+.ruff_cache/
+
+# MLflow local artifacts (use volumes in Docker)
+mlruns/
+mlartifacts/
+
+# Docker
+*.dockerignore
+
+# macOS
+.DS_Store
+
+# JetBrains / VSCode
+.idea/
+.vscode/
+*.iml

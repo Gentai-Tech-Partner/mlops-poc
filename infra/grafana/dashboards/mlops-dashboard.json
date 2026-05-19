@@ -1,0 +1,95 @@
+{
+  "title": "MLOps PoC — Model Production Dashboard",
+  "uid": "mlops-poc-v1",
+  "schemaVersion": 39,
+  "refresh": "30s",
+  "panels": [
+    {
+      "id": 1,
+      "title": "Predictions per Minute",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "rate(mlops_predictions_total[1m]) * 60",
+          "legendFormat": "{{use_case}} - {{result}}"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "P99 Inference Latency (ms)",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, rate(mlops_prediction_latency_seconds_bucket[5m])) * 1000",
+          "legendFormat": "{{use_case}} p99"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Fraud Score (Last)",
+      "type": "gauge",
+      "gridPos": { "x": 0, "y": 8, "w": 6, "h": 6 },
+      "options": { "minValue": 0, "maxValue": 1 },
+      "targets": [
+        { "expr": "mlops_fraud_score_last", "legendFormat": "Fraud Score" }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Churn Score (Last)",
+      "type": "gauge",
+      "gridPos": { "x": 6, "y": 8, "w": 6, "h": 6 },
+      "options": { "minValue": 0, "maxValue": 1 },
+      "targets": [
+        { "expr": "mlops_churn_score_last", "legendFormat": "Churn Score" }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Data Drift Score by Feature",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 14, "w": 24, "h": 8 },
+      "targets": [
+        {
+          "expr": "mlops_drift_score",
+          "legendFormat": "{{use_case}} / {{feature}}"
+        }
+      ],
+      "thresholds": {
+        "steps": [
+          { "color": "green", "value": 0 },
+          { "color": "yellow", "value": 0.1 },
+          { "color": "red", "value": 0.2 }
+        ]
+      }
+    },
+    {
+      "id": 6,
+      "title": "Drift Alerts",
+      "type": "stat",
+      "gridPos": { "x": 12, "y": 8, "w": 6, "h": 6 },
+      "targets": [
+        {
+          "expr": "increase(mlops_drift_alerts_total[24h])",
+          "legendFormat": "{{use_case}}"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "Retraining Triggers (24h)",
+      "type": "stat",
+      "gridPos": { "x": 18, "y": 8, "w": 6, "h": 6 },
+      "targets": [
+        {
+          "expr": "increase(mlops_retraining_triggers_total[24h])",
+          "legendFormat": "{{use_case}}"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,163 @@
+version: "3.9"
+
+# MLOps PoC — Full Stack
+# Stack: MLflow + FastAPI + Drift Monitor + Prometheus + Grafana
+#
+# Usage:
+#   docker compose up -d
+#   Train: docker compose exec training python train.py fraud_detection
+#   Docs:  http://localhost:8000/docs
+
+networks:
+  mlops-net:
+    driver: bridge
+
+volumes:
+  mlflow-data:
+  prometheus-data:
+  grafana-data:
+  postgres-data:
+
+services:
+
+  # ─── Storage ─────────────────────────────────────────────────────────────────
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: mlflow
+      POSTGRES_USER: mlflow
+      POSTGRES_PASSWORD: mlflow_secret
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks: [mlops-net]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mlflow"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ─── MLflow ──────────────────────────────────────────────────────────────────
+
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.13.0
+    command: >
+      mlflow server
+        --backend-store-uri postgresql://mlflow:mlflow_secret@postgres/mlflow
+        --default-artifact-root /mlflow/artifacts
+        --host 0.0.0.0
+        --port 5000
+    ports:
+      - "5000:5000"
+    volumes:
+      - mlflow-data:/mlflow/artifacts
+    networks: [mlops-net]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ─── Training Service ─────────────────────────────────────────────────────────
+
+  training:
+    build:
+      context: ./services/training
+      dockerfile: Dockerfile
+    environment:
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+    volumes:
+      - ./shared:/app/shared
+      - ./services/training:/app
+    networks: [mlops-net]
+    depends_on:
+      mlflow:
+        condition: service_healthy
+
+  # ─── Inference Service ────────────────────────────────────────────────────────
+
+  inference:
+    build:
+      context: ./services/inference
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      FRAUD_MODEL_ALIAS: champion
+      CHURN_MODEL_ALIAS: champion
+    volumes:
+      - ./shared:/app/shared
+    networks: [mlops-net]
+    depends_on:
+      mlflow:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+
+  # ─── Drift Monitor ────────────────────────────────────────────────────────────
+
+  drift-monitor:
+    build:
+      context: ./services/drift-monitor
+      dockerfile: Dockerfile
+    ports:
+      - "8001:8001"
+    environment:
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      DRIFT_THRESHOLD: "0.2"
+      WINDOW_SIZE: "500"
+      RETRAINING_WEBHOOK: http://training:8002/retrain
+    volumes:
+      - ./shared:/app/shared
+    networks: [mlops-net]
+    depends_on:
+      - inference
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─── Prometheus ───────────────────────────────────────────────────────────────
+
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=30d"
+    networks: [mlops-net]
+
+  # ─── Grafana ──────────────────────────────────────────────────────────────────
+
+  grafana:
+    image: grafana/grafana:10.4.0
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./infra/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./infra/grafana/datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
+    networks: [mlops-net]
+    depends_on:
+      - prometheus

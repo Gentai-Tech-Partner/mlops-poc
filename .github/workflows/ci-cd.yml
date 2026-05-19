@@ -1,0 +1,138 @@
+name: MLOps PoC — CI/CD Pipeline
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: ${{ github.repository_owner }}/mlops-poc
+
+jobs:
+  # ─── Quality Gates ──────────────────────────────────────────────────────────
+  lint-and-test:
+    name: Lint & Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install deps
+        run: |
+          pip install ruff pytest pytest-asyncio httpx
+          pip install -r services/inference/requirements.txt
+          pip install -r services/drift-monitor/requirements.txt
+
+      - name: Lint (ruff)
+        run: ruff check services/ shared/
+
+      - name: Unit tests
+        run: pytest tests/ -v --tb=short
+
+  # ─── Model Training Gate ────────────────────────────────────────────────────
+  train-and-validate:
+    name: Train & Validate Models
+    runs-on: ubuntu-latest
+    needs: lint-and-test
+    if: github.ref == 'refs/heads/main'
+    services:
+      mlflow:
+        image: ghcr.io/mlflow/mlflow:v2.13.0
+        ports: ["5000:5000"]
+        options: >-
+          --health-cmd "curl -f http://localhost:5000/health"
+          --health-interval 10s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install training deps
+        run: pip install -r services/training/requirements.txt
+
+      - name: Train fraud model
+        env:
+          MLFLOW_TRACKING_URI: http://localhost:5000
+        run: python services/training/train.py fraud_detection
+
+      - name: Train churn model
+        env:
+          MLFLOW_TRACKING_URI: http://localhost:5000
+        run: python services/training/train.py churn_prediction
+
+      - name: Validate model metrics
+        env:
+          MLFLOW_TRACKING_URI: http://localhost:5000
+        run: python scripts/validate_model_metrics.py
+
+  # ─── Build & Push Images ────────────────────────────────────────────────────
+  build-and-push:
+    name: Build Docker Images
+    runs-on: ubuntu-latest
+    needs: train-and-validate
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        service: [inference, drift-monitor]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v5
+        with:
+          context: ./services/${{ matrix.service }}
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ matrix.service }}:${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ matrix.service }}:latest
+
+  # ─── Deploy to Staging ──────────────────────────────────────────────────────
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    environment: staging
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.STAGING_HOST }}
+          username: ${{ secrets.STAGING_USER }}
+          key: ${{ secrets.STAGING_SSH_KEY }}
+          script: |
+            cd /opt/mlops-poc
+            export IMAGE_TAG=${{ github.sha }}
+            docker compose pull
+            docker compose up -d --no-deps inference drift-monitor
+            docker compose exec -T inference curl -f http://localhost:8000/health
+
+  # ─── Smoke Tests ────────────────────────────────────────────────────────────
+  smoke-test:
+    name: Smoke Tests
+    runs-on: ubuntu-latest
+    needs: deploy-staging
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run smoke tests against staging
+        env:
+          INFERENCE_URL: ${{ secrets.STAGING_INFERENCE_URL }}
+        run: python scripts/smoke_test.py
