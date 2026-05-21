@@ -1,5 +1,6 @@
-# Claude Code IDE settings (local only)
+# Claude Code — local only, never commit
 .claude/
+CLAUDE.md
 
 # Python
 __pycache__/
