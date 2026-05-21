@@ -1,3 +1,15 @@
+<p align="center">
+  <a href="https://gentai.io">
+    <img src="https://gentai.io/gentai_logo_badge_dark.png" alt="Gentai" height="72" />
+  </a>
+</p>
+
+<p align="center">
+  An open-source project by <a href="https://gentai.io"><strong>Gentai</strong></a> &nbsp;·&nbsp; Started by <strong>Andy — Juan Andres Mercado</strong>
+</p>
+
+---
+
 # MLOps PoC
 
 A production-grade MLOps reference implementation demonstrating end-to-end machine learning lifecycle management: from experiment tracking and model training to real-time inference, statistical drift detection, and automated retraining pipelines.
@@ -523,6 +535,10 @@ This project is licensed under the MIT License — see the [LICENSE](LICENSE) fi
 ---
 
 <p align="center">
-  Built as a production-grade MLOps reference implementation.<br>
+  <a href="https://gentai.io">
+    <img src="https://gentai.io/gentai_logo_badge_dark.png" alt="Gentai" height="48" />
+  </a><br><br>
+  Built and open-sourced by <a href="https://gentai.io"><strong>Gentai</strong></a>.<br>
+  Project initiated by <strong>Andy — Juan Andres Mercado</strong>.<br>
   Contributions, issues, and feedback are welcome.
 </p>
